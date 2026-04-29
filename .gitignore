@@ -1,0 +1,43 @@
+# Maven / Java build output
+/target/
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Maven wrapper cache
+.mvn/wrapper/maven-wrapper.jar
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# Local env/config secrets
+.env
+.env.*
+*.local
+
+# Temp files
+*.tmp
+*.swp
+
+# Java crash logs
+hs_err_pid*
+replay_pid*
+
+# Optional: keep app properties tracked if needed.
+# If you prefer local-only DB credentials, uncomment below:
+# src/main/resources/app.properties

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://jasperreports.sourceforge.net/jasperreports http://jasperreports.sourceforge.net/xsd/jasperreport.xsd" name="receipt_80" pageWidth="226" pageHeight="842" columnWidth="218" leftMargin="4" rightMargin="4" topMargin="4" bottomMargin="4" uuid="b2222222-2222-2222-2222-222222222222">
+    <parameter name="RECEIPT_TEXT" class="java.lang.String"/>
+    <detail>
+        <band height="820">
+            <textField isStretchWithOverflow="true">
+                <reportElement x="0" y="0" width="218" height="800"/>
+                <textElement>
+                    <font fontName="Courier New" size="9"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$P{RECEIPT_TEXT}]]></textFieldExpression>
+            </textField>
+        </band>
+    </detail>
+</jasperReport>

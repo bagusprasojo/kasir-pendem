@@ -1,0 +1,123 @@
+CREATE DATABASE IF NOT EXISTS kasir_pendem;
+USE kasir_pendem;
+
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(50) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('ADMIN','KASIR','MANAGER') NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS santri (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  nis VARCHAR(30) UNIQUE NOT NULL,
+  nama VARCHAR(120) NOT NULL,
+  kelas VARCHAR(50) NOT NULL,
+  aktif BOOLEAN NOT NULL DEFAULT TRUE,
+  saldo DECIMAL(14,2) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS barang (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  kode VARCHAR(40) UNIQUE NOT NULL,
+  barcode VARCHAR(80) UNIQUE,
+  nama VARCHAR(120) NOT NULL,
+  satuan VARCHAR(20) NOT NULL,
+  harga_beli_avg DECIMAL(14,2) NOT NULL DEFAULT 0,
+  harga_jual DECIMAL(14,2) NOT NULL,
+  ppn_persen DECIMAL(5,2) NOT NULL DEFAULT 0,
+  stok DECIMAL(14,2) NOT NULL DEFAULT 0,
+  stok_min DECIMAL(14,2) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS supplier (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  nama VARCHAR(120) NOT NULL,
+  kontak VARCHAR(120),
+  alamat VARCHAR(255)
+);
+
+CREATE TABLE IF NOT EXISTS pembelian (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  no_beli VARCHAR(40) UNIQUE NOT NULL,
+  supplier_id BIGINT,
+  tanggal DATETIME NOT NULL,
+  total DECIMAL(14,2) NOT NULL,
+  created_by BIGINT NOT NULL,
+  FOREIGN KEY (supplier_id) REFERENCES supplier(id),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS pembelian_detail (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  pembelian_id BIGINT NOT NULL,
+  barang_id BIGINT NOT NULL,
+  qty DECIMAL(14,2) NOT NULL,
+  harga_beli DECIMAL(14,2) NOT NULL,
+  FOREIGN KEY (pembelian_id) REFERENCES pembelian(id),
+  FOREIGN KEY (barang_id) REFERENCES barang(id)
+);
+
+CREATE TABLE IF NOT EXISTS transaksi (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  no_trx VARCHAR(40) UNIQUE NOT NULL,
+  tanggal DATETIME NOT NULL,
+  subtotal DECIMAL(14,2) NOT NULL,
+  total_diskon DECIMAL(14,2) NOT NULL,
+  total_ppn DECIMAL(14,2) NOT NULL,
+  grand_total DECIMAL(14,2) NOT NULL,
+  bayar_tunai DECIMAL(14,2) NOT NULL DEFAULT 0,
+  bayar_deposit DECIMAL(14,2) NOT NULL DEFAULT 0,
+  kasir_id BIGINT NOT NULL,
+  santri_id BIGINT NULL,
+  FOREIGN KEY (kasir_id) REFERENCES users(id),
+  FOREIGN KEY (santri_id) REFERENCES santri(id)
+);
+
+CREATE TABLE IF NOT EXISTS transaksi_detail (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  transaksi_id BIGINT NOT NULL,
+  barang_id BIGINT NOT NULL,
+  qty DECIMAL(14,2) NOT NULL,
+  harga_jual DECIMAL(14,2) NOT NULL,
+  diskon_item DECIMAL(14,2) NOT NULL DEFAULT 0,
+  ppn_persen DECIMAL(5,2) NOT NULL DEFAULT 0,
+  total DECIMAL(14,2) NOT NULL,
+  FOREIGN KEY (transaksi_id) REFERENCES transaksi(id),
+  FOREIGN KEY (barang_id) REFERENCES barang(id)
+);
+
+CREATE TABLE IF NOT EXISTS wallet_transaction (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  santri_id BIGINT NOT NULL,
+  tipe ENUM('TOPUP','TOPUP_REVERSAL','PAYMENT') NOT NULL,
+  nominal DECIMAL(14,2) NOT NULL,
+  saldo_setelah DECIMAL(14,2) NOT NULL,
+  ref_no VARCHAR(40),
+  reason VARCHAR(255),
+  authorized_by BIGINT NULL,
+  created_by BIGINT NOT NULL,
+  created_at DATETIME NOT NULL,
+  FOREIGN KEY (santri_id) REFERENCES santri(id),
+  FOREIGN KEY (authorized_by) REFERENCES users(id),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_movement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  barang_id BIGINT NOT NULL,
+  tipe ENUM('IN','OUT','ADJUSTMENT') NOT NULL,
+  kategori VARCHAR(30) NOT NULL,
+  qty DECIMAL(14,2) NOT NULL,
+  note VARCHAR(255),
+  created_by BIGINT NOT NULL,
+  created_at DATETIME NOT NULL,
+  FOREIGN KEY (barang_id) REFERENCES barang(id),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+INSERT IGNORE INTO users (id, username, password_hash, role)
+VALUES (1, 'admin', SHA2('admin123', 256), 'ADMIN');
