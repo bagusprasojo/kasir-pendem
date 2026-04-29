@@ -142,13 +142,23 @@ public class KasirService {
                 if (!"TOPUP".equals(tipe)) {
                     return "Hanya transaksi TOPUP yang bisa dibatalkan";
                 }
+                String reversalRef = "TOPUP:" + walletTxId;
+                try (PreparedStatement chk = conn.prepareStatement(
+                        "SELECT 1 FROM wallet_transaction WHERE tipe='TOPUP_REVERSAL' AND ref_no=? LIMIT 1")) {
+                    chk.setString(1, reversalRef);
+                    try (ResultSet rs = chk.executeQuery()) {
+                        if (rs.next()) {
+                            return "Topup ini sudah pernah direversal";
+                        }
+                    }
+                }
                 BigDecimal saldo = currentSaldo(conn, santriId);
                 BigDecimal saldoBaru = saldo.subtract(nominal);
                 if (saldoBaru.compareTo(BigDecimal.ZERO) < 0) {
                     return "Pembatalan ditolak: saldo akan minus";
                 }
                 updateSaldo(conn, santriId, saldoBaru);
-                insertWallet(conn, santriId, "TOPUP_REVERSAL", nominal.negate(), saldoBaru, null, reason, adminId, adminId);
+                insertWallet(conn, santriId, "TOPUP_REVERSAL", nominal.negate(), saldoBaru, reversalRef, reason, adminId, adminId);
                 conn.commit();
                 return "Pembatalan topup berhasil";
             } catch (Exception ex) {
@@ -338,6 +348,141 @@ public class KasirService {
         }
     }
 
+    public List<String> listBarangInventory(String keyword) {
+        List<String> rows = new ArrayList<>();
+        String k = keyword == null ? "" : keyword.trim();
+        String sql = "SELECT id,kode,nama,satuan,stok,stok_min FROM barang " +
+                "WHERE (?='' OR kode LIKE ? OR nama LIKE ? OR barcode LIKE ?) ORDER BY nama";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            String like = "%" + k + "%";
+            ps.setString(1, k);
+            ps.setString(2, like);
+            ps.setString(3, like);
+            ps.setString(4, like);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getString(2) + "|" + rs.getString(3) + "|" + rs.getString(4) + "|" + rs.getBigDecimal(5) + "|" + rs.getBigDecimal(6));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public List<String> listStockMovement(LocalDate from, LocalDate to) {
+        List<String> rows = new ArrayList<>();
+        String sql = "SELECT sm.id,sm.created_at,b.kode,b.nama,sm.tipe,sm.kategori,sm.qty,COALESCE(sm.note,''),u.username " +
+                "FROM stock_movement sm " +
+                "JOIN barang b ON b.id=sm.barang_id " +
+                "JOIN users u ON u.id=sm.created_by " +
+                "WHERE DATE(sm.created_at) BETWEEN ? AND ? " +
+                "ORDER BY sm.created_at DESC";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setDate(1, Date.valueOf(from));
+            ps.setDate(2, Date.valueOf(to));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getTimestamp(2) + "|" + rs.getString(3) + "|" + rs.getString(4) + "|" + rs.getString(5) + "|" +
+                            rs.getString(6) + "|" + rs.getBigDecimal(7) + "|" + rs.getString(8) + "|" + rs.getString(9));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public List<String> listStockMovementByBarang(long barangId, LocalDate from, LocalDate to) {
+        List<String> rows = new ArrayList<>();
+        String sql = "SELECT sm.id,sm.created_at,b.kode,b.nama,sm.tipe,sm.kategori,sm.qty,COALESCE(sm.note,''),u.username " +
+                "FROM stock_movement sm " +
+                "JOIN barang b ON b.id=sm.barang_id " +
+                "JOIN users u ON u.id=sm.created_by " +
+                "WHERE sm.barang_id=? AND DATE(sm.created_at) BETWEEN ? AND ? " +
+                "ORDER BY sm.created_at DESC";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, barangId);
+            ps.setDate(2, Date.valueOf(from));
+            ps.setDate(3, Date.valueOf(to));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getTimestamp(2) + "|" + rs.getString(3) + "|" + rs.getString(4) + "|" + rs.getString(5) + "|" +
+                            rs.getString(6) + "|" + rs.getBigDecimal(7) + "|" + rs.getString(8) + "|" + rs.getString(9));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public String koreksiStockMovement(long movementId, String reason, long userId) {
+        if (reason == null || reason.isBlank()) return "Alasan koreksi wajib diisi";
+        try (Connection conn = Database.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                String q = "SELECT barang_id, tipe, kategori, qty, COALESCE(note,'') FROM stock_movement WHERE id=? FOR UPDATE";
+                long barangId;
+                String tipe;
+                String kategori;
+                BigDecimal qty;
+                String oldNote;
+                try (PreparedStatement ps = conn.prepareStatement(q)) {
+                    ps.setLong(1, movementId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) return "Transaksi mutasi tidak ditemukan";
+                        barangId = rs.getLong(1);
+                        tipe = rs.getString(2);
+                        kategori = rs.getString(3);
+                        qty = rs.getBigDecimal(4);
+                        oldNote = rs.getString(5);
+                    }
+                }
+                String koreksiRef = "KOREKSI:" + movementId;
+                if (!("RUSAK".equalsIgnoreCase(kategori) || "HILANG".equalsIgnoreCase(kategori) || "PEMAKAIAN_INTERNAL".equalsIgnoreCase(kategori))) {
+                    return "Koreksi hanya diizinkan untuk kategori RUSAK/HILANG/PEMAKAIAN_INTERNAL";
+                }
+                try (PreparedStatement chk = conn.prepareStatement(
+                        "SELECT 1 FROM stock_movement WHERE note LIKE ? LIMIT 1")) {
+                    chk.setString(1, "%" + koreksiRef + "%");
+                    try (ResultSet rs = chk.executeQuery()) {
+                        if (rs.next()) return "Transaksi ini sudah pernah dikoreksi";
+                    }
+                }
+
+                BigDecimal delta = qty.negate();
+                try (PreparedStatement up = conn.prepareStatement("UPDATE barang SET stok=stok+? WHERE id=?")) {
+                    up.setBigDecimal(1, delta);
+                    up.setLong(2, barangId);
+                    up.executeUpdate();
+                }
+                String newTipe = "ADJUSTMENT";
+                String newKategori = "KOREKSI_" + kategori;
+                String newNote = koreksiRef + " | alasan: " + reason + " | referensi: " + oldNote;
+                try (PreparedStatement ins = conn.prepareStatement(
+                        "INSERT INTO stock_movement(barang_id,tipe,kategori,qty,note,created_by,created_at) VALUES(?,?,?,?,?,?,NOW())")) {
+                    ins.setLong(1, barangId);
+                    ins.setString(2, newTipe);
+                    ins.setString(3, newKategori);
+                    ins.setBigDecimal(4, delta);
+                    ins.setString(5, newNote);
+                    ins.setLong(6, userId);
+                    ins.executeUpdate();
+                }
+                conn.commit();
+                return "Koreksi berhasil dibuat";
+            } catch (Exception ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            return "Koreksi gagal: " + e.getMessage();
+        }
+    }
+
     public List<String> reportPenjualan(LocalDate from, LocalDate to) {
         List<String> rows = new ArrayList<>();
         String sql = "SELECT no_trx,tanggal,grand_total,bayar_tunai,bayar_deposit FROM transaksi WHERE DATE(tanggal) BETWEEN ? AND ? ORDER BY tanggal";
@@ -364,6 +509,49 @@ public class KasirService {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     rows.add(rs.getLong(1) + ";" + rs.getString(2) + ";" + rs.getBigDecimal(3) + ";" + rs.getBigDecimal(4) + ";" + rs.getTimestamp(5));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public List<String> listWalletBySantri(long santriId, LocalDate from, LocalDate to) {
+        List<String> rows = new ArrayList<>();
+        String sql = "SELECT id,created_at,tipe,nominal,saldo_setelah,COALESCE(ref_no,''),COALESCE(reason,''),COALESCE(authorized_by,0) " +
+                "FROM wallet_transaction WHERE santri_id=? AND DATE(created_at) BETWEEN ? AND ? ORDER BY created_at DESC";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, santriId);
+            ps.setDate(2, Date.valueOf(from));
+            ps.setDate(3, Date.valueOf(to));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getTimestamp(2) + "|" + rs.getString(3) + "|" + rs.getBigDecimal(4) + "|" +
+                            rs.getBigDecimal(5) + "|" + rs.getString(6) + "|" + rs.getString(7) + "|" + rs.getLong(8));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public List<String> listTopupForReversal(long santriId, LocalDate from, LocalDate to) {
+        List<String> rows = new ArrayList<>();
+        String sql = "SELECT t.id,t.created_at,t.nominal,t.saldo_setelah, " +
+                "CASE WHEN EXISTS (SELECT 1 FROM wallet_transaction r WHERE r.tipe='TOPUP_REVERSAL' AND r.ref_no=CONCAT('TOPUP:', t.id)) " +
+                "THEN 'REVERSED' ELSE 'AVAILABLE' END AS status " +
+                "FROM wallet_transaction t " +
+                "WHERE t.santri_id=? AND t.tipe='TOPUP' AND DATE(t.created_at) BETWEEN ? AND ? " +
+                "ORDER BY t.created_at DESC";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, santriId);
+            ps.setDate(2, Date.valueOf(from));
+            ps.setDate(3, Date.valueOf(to));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getTimestamp(2) + "|" + rs.getBigDecimal(3) + "|" + rs.getBigDecimal(4) + "|" + rs.getString(5));
                 }
             }
         } catch (SQLException e) {
@@ -468,6 +656,54 @@ public class KasirService {
         }
     }
 
+    public List<String> listSantriMaster(String keyword) {
+        List<String> rows = new ArrayList<>();
+        String k = keyword == null ? "" : keyword.trim();
+        String sql = "SELECT id,nis,nama,kelas,aktif,saldo FROM santri " +
+                "WHERE (?='' OR nis LIKE ? OR nama LIKE ? OR kelas LIKE ?) ORDER BY nama";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            String like = "%" + k + "%";
+            ps.setString(1, k);
+            ps.setString(2, like);
+            ps.setString(3, like);
+            ps.setString(4, like);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getString(2) + "|" + rs.getString(3) + "|" + rs.getString(4) + "|" + rs.getBoolean(5) + "|" + rs.getBigDecimal(6));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public String updateSantri(long id, String nis, String nama, String kelas, boolean aktif) {
+        String sql = "UPDATE santri SET nis=?, nama=?, kelas=?, aktif=? WHERE id=?";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, nis);
+            ps.setString(2, nama);
+            ps.setString(3, kelas);
+            ps.setBoolean(4, aktif);
+            ps.setLong(5, id);
+            int n = ps.executeUpdate();
+            return n > 0 ? "Santri berhasil diupdate" : "Santri tidak ditemukan";
+        } catch (SQLException e) {
+            return "Gagal update santri: " + e.getMessage();
+        }
+    }
+
+    public String deleteSantri(long id) {
+        String sql = "DELETE FROM santri WHERE id=?";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            int n = ps.executeUpdate();
+            return n > 0 ? "Santri berhasil dihapus" : "Santri tidak ditemukan";
+        } catch (SQLException e) {
+            return "Gagal hapus santri: " + e.getMessage();
+        }
+    }
+
     public String createSupplier(String nama, String kontak, String alamat) {
         String sql = "INSERT INTO supplier(nama,kontak,alamat) VALUES(?,?,?)";
         try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -481,6 +717,53 @@ public class KasirService {
         }
     }
 
+    public List<String> listSupplierMaster(String keyword) {
+        List<String> rows = new ArrayList<>();
+        String k = keyword == null ? "" : keyword.trim();
+        String sql = "SELECT id,nama,COALESCE(kontak,''),COALESCE(alamat,'') FROM supplier " +
+                "WHERE (?='' OR nama LIKE ? OR kontak LIKE ? OR alamat LIKE ?) ORDER BY nama";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            String like = "%" + k + "%";
+            ps.setString(1, k);
+            ps.setString(2, like);
+            ps.setString(3, like);
+            ps.setString(4, like);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getString(2) + "|" + rs.getString(3) + "|" + rs.getString(4));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public String updateSupplier(long id, String nama, String kontak, String alamat) {
+        String sql = "UPDATE supplier SET nama=?, kontak=?, alamat=? WHERE id=?";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, nama);
+            ps.setString(2, kontak);
+            ps.setString(3, alamat);
+            ps.setLong(4, id);
+            int n = ps.executeUpdate();
+            return n > 0 ? "Supplier berhasil diupdate" : "Supplier tidak ditemukan";
+        } catch (SQLException e) {
+            return "Gagal update supplier: " + e.getMessage();
+        }
+    }
+
+    public String deleteSupplier(long id) {
+        String sql = "DELETE FROM supplier WHERE id=?";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            int n = ps.executeUpdate();
+            return n > 0 ? "Supplier berhasil dihapus" : "Supplier tidak ditemukan";
+        } catch (SQLException e) {
+            return "Gagal hapus supplier: " + e.getMessage();
+        }
+    }
+
     public String createUser(String username, String password, Role role) {
         String sql = "INSERT INTO users(username,password_hash,role) VALUES(?,SHA2(?,256),?)";
         try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -491,6 +774,64 @@ public class KasirService {
             return "User berhasil ditambahkan";
         } catch (SQLException e) {
             return "Gagal tambah user: " + e.getMessage();
+        }
+    }
+
+    public List<String> listUserMaster(String keyword) {
+        List<String> rows = new ArrayList<>();
+        String k = keyword == null ? "" : keyword.trim();
+        String sql = "SELECT id,username,role FROM users WHERE (?='' OR username LIKE ? OR role LIKE ?) ORDER BY username";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            String like = "%" + k + "%";
+            ps.setString(1, k);
+            ps.setString(2, like);
+            ps.setString(3, like);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getLong(1) + "|" + rs.getString(2) + "|" + rs.getString(3));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return rows;
+    }
+
+    public String updateUser(long id, String username, String password, Role role) {
+        String sqlNoPass = "UPDATE users SET username=?, role=? WHERE id=?";
+        String sqlWithPass = "UPDATE users SET username=?, password_hash=SHA2(?,256), role=? WHERE id=?";
+        try (Connection conn = Database.getConnection()) {
+            if (password == null || password.isBlank()) {
+                try (PreparedStatement ps = conn.prepareStatement(sqlNoPass)) {
+                    ps.setString(1, username);
+                    ps.setString(2, role.name());
+                    ps.setLong(3, id);
+                    int n = ps.executeUpdate();
+                    return n > 0 ? "User berhasil diupdate" : "User tidak ditemukan";
+                }
+            } else {
+                try (PreparedStatement ps = conn.prepareStatement(sqlWithPass)) {
+                    ps.setString(1, username);
+                    ps.setString(2, password);
+                    ps.setString(3, role.name());
+                    ps.setLong(4, id);
+                    int n = ps.executeUpdate();
+                    return n > 0 ? "User berhasil diupdate" : "User tidak ditemukan";
+                }
+            }
+        } catch (SQLException e) {
+            return "Gagal update user: " + e.getMessage();
+        }
+    }
+
+    public String deleteUser(long id) {
+        String sql = "DELETE FROM users WHERE id=?";
+        try (Connection conn = Database.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, id);
+            int n = ps.executeUpdate();
+            return n > 0 ? "User berhasil dihapus" : "User tidak ditemukan";
+        } catch (SQLException e) {
+            return "Gagal hapus user: " + e.getMessage();
         }
     }
 

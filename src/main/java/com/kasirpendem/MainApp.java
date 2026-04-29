@@ -20,6 +20,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.application.Platform;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -34,6 +35,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public class MainApp extends Application {
@@ -86,7 +88,8 @@ public class MainApp extends Application {
             operasional.getChildren().add(menuButton("POS", () -> openWindow("POS", posForm(user), 980, 720)));
         }
         if (user.role() == Role.ADMIN) {
-            operasional.getChildren().add(menuButton("Deposit", () -> openWindow("Deposit", depositForm(user), 620, 440)));
+            operasional.getChildren().add(menuButton("Deposit Topup", () -> openWindow("Deposit Topup", depositTopupForm(user), 960, 700)));
+            operasional.getChildren().add(menuButton("Reversal Topup", () -> openWindow("Reversal Topup", reversalTopupForm(user), 960, 700)));
             operasional.getChildren().add(menuButton("Inventori", () -> openWindow("Inventori", inventoryForm(user), 760, 520)));
             operasional.getChildren().add(menuButton("Kulakan", () -> openWindow("Kulakan", kulakanForm(user), 720, 560)));
             operasional.getChildren().add(menuButton("Stock Opname", () -> openWindow("Stock Opname", stockOpnameForm(user), 720, 560)));
@@ -404,42 +407,715 @@ public class MainApp extends Application {
         return root;
     }
 
-    private VBox depositForm(User user) {
-        TextField santriId = new TextField();
-        TextField amount = new TextField();
-        TextField walletId = new TextField();
-        TextField reason = new TextField();
+    private VBox depositTopupForm(User user) {
+        final int pageSize = 10;
         Label msg = new Label();
-        santriId.setPromptText("Santri ID");
+        TextField search = new TextField();
+        search.setPromptText("Cari NIS/Nama santri");
+
+        ObservableList<SantriMasterRow> santriRows = FXCollections.observableArrayList();
+        ObservableList<SantriMasterRow> allSantriRows = FXCollections.observableArrayList();
+        TableView<SantriMasterRow> santriTable = new TableView<>(santriRows);
+        santriTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        santriTable.setFixedCellSize(28);
+        santriTable.setPrefHeight((pageSize * 28) + 80);
+        Pagination santriPager = new Pagination(1, 0);
+
+        TableColumn<SantriMasterRow, String> cNis = new TableColumn<>("NIS");
+        cNis.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nis()));
+        TableColumn<SantriMasterRow, String> cNama = new TableColumn<>("Nama");
+        cNama.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nama()));
+        TableColumn<SantriMasterRow, String> cKelas = new TableColumn<>("Kelas");
+        cKelas.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kelas()));
+        TableColumn<SantriMasterRow, BigDecimal> cSaldo = new TableColumn<>("Saldo");
+        cSaldo.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().saldo()));
+        santriTable.getColumns().addAll(cNis, cNama, cKelas, cSaldo);
+
+        AtomicReference<Long> selectedSantriId = new AtomicReference<>(null);
+        Label selectedTitle = new Label("Belum ada santri dipilih");
+        TextField santriInfo = new TextField();
+        santriInfo.setEditable(false);
+        TextField saldoNow = new TextField();
+        saldoNow.setEditable(false);
+        VBox selectedCard = new VBox(4, selectedTitle, santriInfo, saldoNow);
+        selectedCard.setPadding(new Insets(8));
+        selectedCard.setStyle("-fx-background-color: #fff4cc; -fx-border-color: #e6c200; -fx-border-radius: 6; -fx-background-radius: 6;");
+        TextField amount = new TextField();
         amount.setPromptText("Nominal topup");
-        walletId.setPromptText("WalletTx ID");
+        DatePicker from = new DatePicker(LocalDate.now().minusDays(30));
+        DatePicker to = new DatePicker(LocalDate.now());
+
+        ObservableList<WalletRow> ledgerRows = FXCollections.observableArrayList();
+        ObservableList<WalletRow> allLedgerRows = FXCollections.observableArrayList();
+        TableView<WalletRow> ledgerTable = new TableView<>(ledgerRows);
+        ledgerTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        ledgerTable.setFixedCellSize(28);
+        ledgerTable.setPrefHeight((pageSize * 28) + 80);
+        Pagination ledgerPager = new Pagination(1, 0);
+
+        TableColumn<WalletRow, Long> lId = new TableColumn<>("TxID");
+        lId.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().id()));
+        TableColumn<WalletRow, String> lTime = new TableColumn<>("Waktu");
+        lTime.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().createdAt()));
+        TableColumn<WalletRow, String> lType = new TableColumn<>("Tipe");
+        lType.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().tipe()));
+        TableColumn<WalletRow, BigDecimal> lNom = new TableColumn<>("Nominal");
+        lNom.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().nominal()));
+        TableColumn<WalletRow, BigDecimal> lSaldo = new TableColumn<>("Saldo Setelah");
+        lSaldo.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().saldoSetelah()));
+        TableColumn<WalletRow, String> lRef = new TableColumn<>("Ref");
+        lRef.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().refNo()));
+        ledgerTable.getColumns().addAll(lId, lTime, lType, lNom, lSaldo, lRef);
+
+        Runnable renderSantriPage = () -> {
+            int idx = santriPager.getCurrentPageIndex();
+            int fromIdx = idx * pageSize;
+            int toIdx = Math.min(fromIdx + pageSize, allSantriRows.size());
+            if (fromIdx >= toIdx) santriRows.clear(); else santriRows.setAll(allSantriRows.subList(fromIdx, toIdx));
+        };
+        Runnable loadSantri = () -> {
+            allSantriRows.setAll(service.listSantriMaster(search.getText()).stream().map(this::parseSantriMasterRow).toList());
+            santriPager.setPageCount(Math.max(1, (int) Math.ceil(allSantriRows.size() / (double) pageSize)));
+            santriPager.setCurrentPageIndex(0);
+            renderSantriPage.run();
+        };
+        Runnable restoreSelectedSantri = () -> {
+            Long currentId = selectedSantriId.get();
+            if (currentId == null) return;
+            SantriMasterRow found = allSantriRows.stream().filter(s -> s.id() == currentId).findFirst().orElse(null);
+            if (found == null) return;
+            int globalIndex = allSantriRows.indexOf(found);
+            int targetPage = globalIndex / pageSize;
+            if (targetPage >= 0 && targetPage < santriPager.getPageCount()) {
+                santriPager.setCurrentPageIndex(targetPage);
+                renderSantriPage.run();
+                santriTable.getSelectionModel().select(found);
+            }
+            santriInfo.setText(found.nis() + " - " + found.nama() + " (" + found.kelas() + ")");
+            saldoNow.setText(found.saldo().toPlainString());
+            selectedTitle.setText("Santri terpilih");
+            selectedCard.setStyle("-fx-background-color: #e8f7ee; -fx-border-color: #2f855a; -fx-border-radius: 6; -fx-background-radius: 6;");
+        };
+        santriPager.currentPageIndexProperty().addListener((o, a, b) -> renderSantriPage.run());
+        search.textProperty().addListener((o, a, b) -> loadSantri.run());
+
+        Runnable renderLedgerPage = () -> {
+            int idx = ledgerPager.getCurrentPageIndex();
+            int fromIdx = idx * pageSize;
+            int toIdx = Math.min(fromIdx + pageSize, allLedgerRows.size());
+            if (fromIdx >= toIdx) ledgerRows.clear(); else ledgerRows.setAll(allLedgerRows.subList(fromIdx, toIdx));
+        };
+        Runnable loadLedger = () -> {
+            if (selectedSantriId.get() == null) {
+                allLedgerRows.clear();
+                ledgerRows.clear();
+                ledgerPager.setPageCount(1);
+                return;
+            }
+            allLedgerRows.setAll(service.listWalletBySantri(selectedSantriId.get(), from.getValue(), to.getValue()).stream().map(this::parseWalletRow).toList());
+            ledgerPager.setPageCount(Math.max(1, (int) Math.ceil(allLedgerRows.size() / (double) pageSize)));
+            ledgerPager.setCurrentPageIndex(0);
+            renderLedgerPage.run();
+        };
+        ledgerPager.currentPageIndexProperty().addListener((o, a, b) -> renderLedgerPage.run());
+
+        santriTable.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
+            if (v == null) return;
+            selectedSantriId.set(v.id());
+            selectedTitle.setText("Santri terpilih");
+            santriInfo.setText(v.nis() + " - " + v.nama() + " (" + v.kelas() + ")");
+            saldoNow.setText(v.saldo().toPlainString());
+            selectedCard.setStyle("-fx-background-color: #e8f7ee; -fx-border-color: #2f855a; -fx-border-radius: 6; -fx-background-radius: 6;");
+            loadLedger.run();
+        });
+        Button batalPilihSantri = new Button("Batal Pilih Santri");
+        batalPilihSantri.setOnAction(e -> {
+            selectedSantriId.set(null);
+            santriTable.getSelectionModel().clearSelection();
+            selectedTitle.setText("Belum ada santri dipilih");
+            santriInfo.clear();
+            saldoNow.clear();
+            selectedCard.setStyle("-fx-background-color: #fff4cc; -fx-border-color: #e6c200; -fx-border-radius: 6; -fx-background-radius: 6;");
+            allLedgerRows.clear();
+            ledgerRows.clear();
+            ledgerPager.setPageCount(1);
+        });
+        Button refresh = new Button("Refresh (F5)");
+        refresh.setOnAction(e -> {
+            loadSantri.run();
+            loadLedger.run();
+        });
+        Button baru = new Button("Baru (Ctrl+N)");
+        baru.setOnAction(e -> {
+            amount.clear();
+            msg.setText("");
+        });
+        Button topup = new Button("Proses Topup (Ctrl+T)");
+        topup.setOnAction(e -> {
+            try {
+                if (selectedSantriId.get() == null) {
+                    msg.setText("Pilih santri terlebih dahulu");
+                    return;
+                }
+                String res = service.processTopup(selectedSantriId.get(), parseMoney(amount.getText(), "Nominal"), user.id());
+                msg.setText(res);
+                loadSantri.run();
+                restoreSelectedSantri.run();
+                loadLedger.run();
+                if (res.startsWith("Topup sukses")) {
+                    amount.clear();
+                    amount.requestFocus();
+                }
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        HBox santriPagerBox = new HBox(santriPager);
+        santriPagerBox.setStyle("-fx-alignment: center-right;");
+        VBox listPanel = new VBox(8, new HBox(8, search, refresh), santriTable, santriPagerBox);
+        listPanel.setPadding(new Insets(10));
+        listPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        GridPane formGrid = new GridPane();
+        formGrid.setHgap(8); formGrid.setVgap(8);
+        formGrid.addRow(0, new Label("Nominal Topup"), amount);
+
+        VBox formPanel = new VBox(8, selectedCard, formGrid, new HBox(8, baru, batalPilihSantri, topup), msg);
+        formPanel.setPadding(new Insets(10));
+        formPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        Button applyLedgerFilter = new Button("Terapkan Filter");
+        applyLedgerFilter.setOnAction(e -> loadLedger.run());
+        HBox ledgerPagerBox = new HBox(ledgerPager);
+        ledgerPagerBox.setStyle("-fx-alignment: center-right;");
+        VBox ledgerPanel = new VBox(8, new Label("Riwayat Deposit"), new HBox(8, new Label("Dari"), from, new Label("Sampai"), to, applyLedgerFilter), ledgerTable, ledgerPagerBox);
+        ledgerPanel.setPadding(new Insets(10));
+        ledgerPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        HBox topRow = new HBox(10, listPanel, formPanel);
+        HBox.setHgrow(listPanel, Priority.ALWAYS);
+        HBox.setHgrow(formPanel, Priority.ALWAYS);
+        listPanel.setPrefWidth(560);
+        formPanel.setPrefWidth(460);
+
+        VBox box = new VBox(10, new Label("Deposit Topup"), topRow, ledgerPanel);
+        box.setPadding(new Insets(10));
+        box.setFocusTraversable(true);
+        box.setOnKeyPressed(e -> {
+            if (e.isControlDown() && e.getCode() == KeyCode.N) {
+                baru.fire();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.F) {
+                search.requestFocus();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.T) {
+                topup.fire();
+            } else if (e.getCode() == KeyCode.F5) {
+                refresh.fire();
+            } else if (e.getCode() == KeyCode.ESCAPE) {
+                batalPilihSantri.fire();
+            }
+        });
+
+        loadSantri.run();
+        return box;
+    }
+
+    private VBox reversalTopupForm(User user) {
+        final int pageSize = 10;
+        Label msg = new Label();
+        TextField search = new TextField();
+        search.setPromptText("Cari NIS/Nama santri");
+        DatePicker from = new DatePicker(LocalDate.now().minusDays(30));
+        DatePicker to = new DatePicker(LocalDate.now());
+
+        ObservableList<SantriMasterRow> santriRows = FXCollections.observableArrayList();
+        ObservableList<SantriMasterRow> allSantriRows = FXCollections.observableArrayList();
+        TableView<SantriMasterRow> santriTable = new TableView<>(santriRows);
+        santriTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        santriTable.setFixedCellSize(28);
+        santriTable.setPrefHeight((pageSize * 28) + 80);
+        Pagination santriPager = new Pagination(1, 0);
+
+        TableColumn<SantriMasterRow, String> cNis = new TableColumn<>("NIS");
+        cNis.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nis()));
+        TableColumn<SantriMasterRow, String> cNama = new TableColumn<>("Nama");
+        cNama.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nama()));
+        TableColumn<SantriMasterRow, String> cKelas = new TableColumn<>("Kelas");
+        cKelas.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kelas()));
+        TableColumn<SantriMasterRow, BigDecimal> cSaldo = new TableColumn<>("Saldo");
+        cSaldo.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().saldo()));
+        santriTable.getColumns().addAll(cNis, cNama, cKelas, cSaldo);
+
+        AtomicReference<Long> selectedSantriId = new AtomicReference<>(null);
+        Label selectedTitle = new Label("Belum ada santri dipilih");
+        TextField santriInfo = new TextField();
+        santriInfo.setEditable(false);
+        VBox selectedCard = new VBox(4, selectedTitle, santriInfo);
+        selectedCard.setPadding(new Insets(8));
+        selectedCard.setStyle("-fx-background-color: #fff4cc; -fx-border-color: #e6c200; -fx-border-radius: 6; -fx-background-radius: 6;");
+        TextField walletId = new TextField();
+        walletId.setEditable(false);
+        TextField reason = new TextField();
         reason.setPromptText("Alasan reversal");
 
-        Button topup = new Button("Topup");
-        topup.setOnAction(e -> msg.setText(service.processTopup(parseLong(santriId.getText(), "Santri ID"), parseMoney(amount.getText(), "Nominal"), user.id())));
-        Button reverse = new Button("Batalkan Topup");
-        reverse.setOnAction(e -> msg.setText(service.reverseTopup(parseLong(walletId.getText(), "WalletTx ID"), reason.getText().trim(), user.id())));
+        ObservableList<TopupReversalRow> ledgerRows = FXCollections.observableArrayList();
+        ObservableList<TopupReversalRow> allLedgerRows = FXCollections.observableArrayList();
+        TableView<TopupReversalRow> ledgerTable = new TableView<>(ledgerRows);
+        ledgerTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        ledgerTable.setFixedCellSize(28);
+        ledgerTable.setPrefHeight((pageSize * 28) + 80);
+        Pagination ledgerPager = new Pagination(1, 0);
+        TableColumn<TopupReversalRow, Long> lId = new TableColumn<>("TxID");
+        lId.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().id()));
+        TableColumn<TopupReversalRow, String> lTime = new TableColumn<>("Waktu");
+        lTime.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().createdAt()));
+        TableColumn<TopupReversalRow, BigDecimal> lNom = new TableColumn<>("Nominal");
+        lNom.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().nominal()));
+        TableColumn<TopupReversalRow, BigDecimal> lSaldo = new TableColumn<>("Saldo Setelah");
+        lSaldo.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().saldoSetelah()));
+        TableColumn<TopupReversalRow, String> lStatus = new TableColumn<>("Status");
+        lStatus.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().status()));
+        ledgerTable.getColumns().addAll(lId, lTime, lNom, lSaldo, lStatus);
 
-        VBox box = new VBox(8, new Label("Deposit Santri"), santriId, amount, topup, new Separator(), walletId, reason, reverse, msg);
+        Runnable renderSantriPage = () -> {
+            int idx = santriPager.getCurrentPageIndex();
+            int fromIdx = idx * pageSize;
+            int toIdx = Math.min(fromIdx + pageSize, allSantriRows.size());
+            if (fromIdx >= toIdx) santriRows.clear(); else santriRows.setAll(allSantriRows.subList(fromIdx, toIdx));
+        };
+        Runnable loadSantri = () -> {
+            allSantriRows.setAll(service.listSantriMaster(search.getText()).stream().map(this::parseSantriMasterRow).toList());
+            santriPager.setPageCount(Math.max(1, (int) Math.ceil(allSantriRows.size() / (double) pageSize)));
+            santriPager.setCurrentPageIndex(0);
+            renderSantriPage.run();
+        };
+        santriPager.currentPageIndexProperty().addListener((o, a, b) -> renderSantriPage.run());
+        search.textProperty().addListener((o, a, b) -> loadSantri.run());
+
+        Runnable renderLedgerPage = () -> {
+            int idx = ledgerPager.getCurrentPageIndex();
+            int fromIdx = idx * pageSize;
+            int toIdx = Math.min(fromIdx + pageSize, allLedgerRows.size());
+            if (fromIdx >= toIdx) ledgerRows.clear(); else ledgerRows.setAll(allLedgerRows.subList(fromIdx, toIdx));
+        };
+        Runnable loadTopupLedger = () -> {
+            if (selectedSantriId.get() == null) {
+                allLedgerRows.clear();
+                ledgerRows.clear();
+                ledgerPager.setPageCount(1);
+                return;
+            }
+            allLedgerRows.setAll(
+                    service.listTopupForReversal(selectedSantriId.get(), from.getValue(), to.getValue()).stream()
+                            .map(this::parseTopupReversalRow)
+                            .toList()
+            );
+            ledgerPager.setPageCount(Math.max(1, (int) Math.ceil(allLedgerRows.size() / (double) pageSize)));
+            ledgerPager.setCurrentPageIndex(0);
+            renderLedgerPage.run();
+        };
+        ledgerPager.currentPageIndexProperty().addListener((o, a, b) -> renderLedgerPage.run());
+
+        santriTable.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
+            if (v == null) return;
+            selectedSantriId.set(v.id());
+            selectedTitle.setText("Santri terpilih");
+            santriInfo.setText(v.nis() + " - " + v.nama() + " (" + v.kelas() + ")");
+            selectedCard.setStyle("-fx-background-color: #e8f7ee; -fx-border-color: #2f855a; -fx-border-radius: 6; -fx-background-radius: 6;");
+            loadTopupLedger.run();
+        });
+        Button batalPilihSantri = new Button("Batal Pilih Santri");
+        batalPilihSantri.setOnAction(e -> {
+            selectedSantriId.set(null);
+            santriTable.getSelectionModel().clearSelection();
+            selectedTitle.setText("Belum ada santri dipilih");
+            santriInfo.clear();
+            selectedCard.setStyle("-fx-background-color: #fff4cc; -fx-border-color: #e6c200; -fx-border-radius: 6; -fx-background-radius: 6;");
+            walletId.clear();
+            reason.clear();
+            allLedgerRows.clear();
+            ledgerRows.clear();
+            ledgerPager.setPageCount(1);
+        });
+        ledgerTable.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
+            if (v == null) return;
+            if (!"AVAILABLE".equalsIgnoreCase(v.status())) {
+                msg.setText("Transaksi ini sudah direversal dan tidak bisa diproses ulang");
+                Platform.runLater(() -> {
+                    ledgerTable.getSelectionModel().clearSelection();
+                    walletId.clear();
+                });
+                return;
+            }
+            walletId.setText(String.valueOf(v.id()));
+        });
+
+        Button refresh = new Button("Refresh (F5)");
+        refresh.setOnAction(e -> {
+            loadSantri.run();
+            loadTopupLedger.run();
+        });
+        Button baru = new Button("Baru (Ctrl+N)");
+        baru.setOnAction(e -> {
+            walletId.clear();
+            reason.clear();
+            msg.setText("");
+            ledgerTable.getSelectionModel().clearSelection();
+        });
+        Button reverse = new Button("Proses Reversal (Ctrl+R)");
+        reverse.setOnAction(e -> {
+            if (reverse.isDisabled()) return;
+            reverse.setDisable(true);
+            try {
+                if (walletId.getText().isBlank()) {
+                    msg.setText("Pilih transaksi TOPUP untuk reversal");
+                    return;
+                }
+                if (reason.getText().isBlank()) {
+                    msg.setText("Alasan reversal wajib diisi");
+                    return;
+                }
+                Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Batalkan topup wallet ID " + walletId.getText() + "?", ButtonType.YES, ButtonType.NO);
+                confirm.setHeaderText("Konfirmasi Reversal");
+                confirm.showAndWait().ifPresent(bt -> {
+                    if (bt == ButtonType.YES) {
+                        String res = service.reverseTopup(parseLong(walletId.getText(), "Wallet ID"), reason.getText().trim(), user.id());
+                        msg.setText(res);
+                        loadSantri.run();
+                        loadTopupLedger.run();
+                        if (res.startsWith("Pembatalan topup berhasil")) {
+                            reason.clear();
+                            walletId.clear();
+                            ledgerTable.getSelectionModel().clearSelection();
+                            reason.requestFocus();
+                        }
+                    }
+                });
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            } finally {
+                reverse.setDisable(false);
+            }
+        });
+
+        HBox santriPagerBox = new HBox(santriPager);
+        santriPagerBox.setStyle("-fx-alignment: center-right;");
+        VBox santriPanel = new VBox(8, new HBox(8, search, refresh), santriTable, santriPagerBox);
+        santriPanel.setPadding(new Insets(10));
+        santriPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        GridPane formGrid = new GridPane();
+        formGrid.setHgap(8); formGrid.setVgap(8);
+        formGrid.addRow(0, new Label("Wallet Tx ID"), walletId);
+        formGrid.addRow(1, new Label("Alasan Reversal"), reason);
+
+        VBox formPanel = new VBox(8, selectedCard, formGrid, new HBox(8, baru, batalPilihSantri, reverse), msg);
+        formPanel.setPadding(new Insets(10));
+        formPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        Button applyTopupFilter = new Button("Terapkan Filter");
+        applyTopupFilter.setOnAction(e -> loadTopupLedger.run());
+        HBox ledgerPagerBox = new HBox(ledgerPager);
+        ledgerPagerBox.setStyle("-fx-alignment: center-right;");
+        VBox ledgerPanel = new VBox(8, new Label("Daftar TOPUP (untuk reversal)"), new HBox(8, new Label("Dari"), from, new Label("Sampai"), to, applyTopupFilter), ledgerTable, ledgerPagerBox);
+        ledgerPanel.setPadding(new Insets(10));
+        ledgerPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        HBox topRow = new HBox(10, santriPanel, formPanel);
+        HBox.setHgrow(santriPanel, Priority.ALWAYS);
+        HBox.setHgrow(formPanel, Priority.ALWAYS);
+        santriPanel.setPrefWidth(560);
+        formPanel.setPrefWidth(460);
+
+        VBox box = new VBox(10, new Label("Reversal Topup"), topRow, ledgerPanel);
         box.setPadding(new Insets(10));
+        box.setFocusTraversable(true);
+        box.setOnKeyPressed(e -> {
+            if (e.isControlDown() && e.getCode() == KeyCode.N) {
+                baru.fire();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.F) {
+                search.requestFocus();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.R) {
+                reverse.fire();
+            } else if (e.getCode() == KeyCode.F5) {
+                refresh.fire();
+            } else if (e.getCode() == KeyCode.DELETE) {
+                ledgerTable.getSelectionModel().clearSelection();
+                walletId.clear();
+            } else if (e.getCode() == KeyCode.ESCAPE) {
+                batalPilihSantri.fire();
+            }
+        });
+
+        loadSantri.run();
         return box;
     }
 
     private VBox inventoryForm(User user) {
-        TextArea log = new TextArea();
-        TextField barangId = new TextField();
+        final int pageSize = 10;
+        AtomicReference<Long> selectedBarangId = new AtomicReference<>(null);
+        Label msg = new Label();
+
+        TextField search = new TextField();
+        search.setPromptText("Cari kode/nama/barcode barang");
+        ObservableList<InventoryBarangRow> rows = FXCollections.observableArrayList();
+        ObservableList<InventoryBarangRow> allRows = FXCollections.observableArrayList();
+        TableView<InventoryBarangRow> table = new TableView<>(rows);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        table.setFixedCellSize(28);
+        table.setPrefHeight((pageSize * 28) + 120);
+        Pagination pager = new Pagination(1, 0);
+
+        TableColumn<InventoryBarangRow, String> cKode = new TableColumn<>("Kode");
+        cKode.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kode()));
+        TableColumn<InventoryBarangRow, String> cNama = new TableColumn<>("Nama");
+        cNama.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nama()));
+        TableColumn<InventoryBarangRow, String> cSatuan = new TableColumn<>("Satuan");
+        cSatuan.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().satuan()));
+        TableColumn<InventoryBarangRow, BigDecimal> cStok = new TableColumn<>("Stok");
+        cStok.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().stok()));
+        TableColumn<InventoryBarangRow, BigDecimal> cStokMin = new TableColumn<>("Stok Min");
+        cStokMin.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().stokMin()));
+        table.getColumns().addAll(cKode, cNama, cSatuan, cStok, cStokMin);
+
+        Label selectedTitle = new Label("Belum ada barang dipilih");
+        TextField selectedBarang = new TextField();
+        selectedBarang.setEditable(false);
+        VBox selectedCard = new VBox(4, selectedTitle, selectedBarang);
+        selectedCard.setPadding(new Insets(8));
+        selectedCard.setStyle("-fx-background-color: #fff4cc; -fx-border-color: #e6c200; -fx-border-radius: 6; -fx-background-radius: 6;");
+
         TextField qty = new TextField();
+        qty.setPromptText("Qty keluar");
         ComboBox<String> kategori = new ComboBox<>();
         kategori.getItems().addAll("RUSAK", "HILANG", "PEMAKAIAN_INTERNAL");
         kategori.getSelectionModel().selectFirst();
-        barangId.setPromptText("Barang ID");
-        qty.setPromptText("Qty keluar");
-        Button out = new Button("Catat Stok Keluar");
-        out.setOnAction(e -> log.setText(service.stockOutNonSales(parseLong(barangId.getText(), "Barang ID"), parseMoney(qty.getText(), "Qty"), kategori.getValue(), "Stok keluar non-penjualan", user.id())));
-        Button refresh = new Button("Refresh Barang");
-        refresh.setOnAction(e -> log.setText(String.join("\n", service.listBarang())));
-        VBox box = new VBox(8, new Label("Inventori"), log, new HBox(8, barangId, qty, kategori, out, refresh));
+        TextField note = new TextField();
+        note.setPromptText("Catatan (opsional)");
+
+        DatePicker from = new DatePicker(LocalDate.now().minusDays(30));
+        DatePicker to = new DatePicker(LocalDate.now());
+        CheckBox showAllMoves = new CheckBox("Tampilkan semua barang (audit)");
+        TextField koreksiMovementId = new TextField();
+        koreksiMovementId.setEditable(false);
+        TextField koreksiReason = new TextField();
+        koreksiReason.setPromptText("Alasan koreksi");
+        ObservableList<StockMoveRow> moveRows = FXCollections.observableArrayList();
+        ObservableList<StockMoveRow> allMoveRows = FXCollections.observableArrayList();
+        TableView<StockMoveRow> moveTable = new TableView<>(moveRows);
+        moveTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        moveTable.setFixedCellSize(28);
+        moveTable.setPrefHeight((pageSize * 28) + 120);
+        Pagination movePager = new Pagination(1, 0);
+
+        TableColumn<StockMoveRow, String> mTime = new TableColumn<>("Waktu");
+        mTime.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().createdAt()));
+        TableColumn<StockMoveRow, String> mKode = new TableColumn<>("Kode");
+        mKode.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kode()));
+        TableColumn<StockMoveRow, String> mNama = new TableColumn<>("Nama");
+        mNama.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nama()));
+        TableColumn<StockMoveRow, String> mTipe = new TableColumn<>("Tipe");
+        mTipe.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().tipe()));
+        TableColumn<StockMoveRow, String> mKategori = new TableColumn<>("Kategori");
+        mKategori.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kategori()));
+        TableColumn<StockMoveRow, BigDecimal> mQty = new TableColumn<>("Qty");
+        mQty.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().qty()));
+        TableColumn<StockMoveRow, String> mNote = new TableColumn<>("Note");
+        mNote.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().note()));
+        TableColumn<StockMoveRow, String> mUser = new TableColumn<>("User");
+        mUser.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().username()));
+        moveTable.getColumns().addAll(mTime, mKode, mNama, mTipe, mKategori, mQty, mNote, mUser);
+        moveTable.getSelectionModel().selectedItemProperty().addListener((o, a, v) -> {
+            if (v == null) return;
+            koreksiMovementId.setText(String.valueOf(v.id()));
+        });
+
+        Runnable renderBarangPage = () -> {
+            int idx = pager.getCurrentPageIndex();
+            int f = idx * pageSize;
+            int t = Math.min(f + pageSize, allRows.size());
+            if (f >= t) rows.clear(); else rows.setAll(allRows.subList(f, t));
+        };
+        Runnable loadBarang = () -> {
+            allRows.setAll(service.listBarangInventory(search.getText()).stream().map(this::parseInventoryBarangRow).toList());
+            pager.setPageCount(Math.max(1, (int) Math.ceil(allRows.size() / (double) pageSize)));
+            pager.setCurrentPageIndex(0);
+            renderBarangPage.run();
+        };
+        pager.currentPageIndexProperty().addListener((o, a, b) -> renderBarangPage.run());
+        search.textProperty().addListener((o, a, b) -> loadBarang.run());
+        Runnable renderMovePage = () -> {
+            int idx = movePager.getCurrentPageIndex();
+            int f = idx * pageSize;
+            int t = Math.min(f + pageSize, allMoveRows.size());
+            if (f >= t) moveRows.clear(); else moveRows.setAll(allMoveRows.subList(f, t));
+        };
+        Runnable loadMoves = () -> {
+            if (!showAllMoves.isSelected() && selectedBarangId.get() == null) {
+                allMoveRows.clear();
+                moveRows.clear();
+                movePager.setPageCount(1);
+                return;
+            }
+            List<String> data = showAllMoves.isSelected()
+                    ? service.listStockMovement(from.getValue(), to.getValue())
+                    : service.listStockMovementByBarang(selectedBarangId.get(), from.getValue(), to.getValue());
+            allMoveRows.setAll(data.stream().map(this::parseStockMoveRow).toList());
+            movePager.setPageCount(Math.max(1, (int) Math.ceil(allMoveRows.size() / (double) pageSize)));
+            movePager.setCurrentPageIndex(0);
+            renderMovePage.run();
+        };
+        movePager.currentPageIndexProperty().addListener((o, a, b) -> renderMovePage.run());
+        showAllMoves.selectedProperty().addListener((o, a, b) -> loadMoves.run());
+
+        table.getSelectionModel().selectedItemProperty().addListener((o, a, v) -> {
+            if (v == null) return;
+            selectedBarangId.set(v.id());
+            selectedTitle.setText("Barang terpilih");
+            selectedBarang.setText(v.kode() + " - " + v.nama() + " | stok " + v.stok() + " " + v.satuan());
+            selectedCard.setStyle("-fx-background-color: #e8f7ee; -fx-border-color: #2f855a; -fx-border-radius: 6; -fx-background-radius: 6;");
+            if (!showAllMoves.isSelected()) {
+                loadMoves.run();
+            }
+        });
+
+        Button baru = new Button("Baru (Ctrl+N)");
+        baru.setOnAction(e -> {
+            qty.clear();
+            note.clear();
+            msg.setText("");
+        });
+        Button batal = new Button("Batal Pilih Barang");
+        batal.setOnAction(e -> {
+            selectedBarangId.set(null);
+            table.getSelectionModel().clearSelection();
+            selectedTitle.setText("Belum ada barang dipilih");
+            selectedBarang.clear();
+            selectedCard.setStyle("-fx-background-color: #fff4cc; -fx-border-color: #e6c200; -fx-border-radius: 6; -fx-background-radius: 6;");
+            if (!showAllMoves.isSelected()) {
+                loadMoves.run();
+            }
+        });
+        Button proses = new Button("Proses (Ctrl+S)");
+        proses.setOnAction(e -> {
+            try {
+                if (selectedBarangId.get() == null) {
+                    msg.setText("Pilih barang terlebih dahulu");
+                    return;
+                }
+                String res = service.stockOutNonSales(selectedBarangId.get(), parseMoney(qty.getText(), "Qty"), kategori.getValue(), note.getText().trim(), user.id());
+                msg.setText(res);
+                loadBarang.run();
+                loadMoves.run();
+                if (res.startsWith("Stok keluar non-penjualan tercatat")) {
+                    qty.clear();
+                    note.clear();
+                    qty.requestFocus();
+                }
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button refresh = new Button("Refresh (F5)");
+        refresh.setOnAction(e -> {
+            loadBarang.run();
+            loadMoves.run();
+        });
+        Button applyFilter = new Button("Terapkan Filter");
+        applyFilter.setOnAction(e -> loadMoves.run());
+        Button koreksiBtn = new Button("Koreksi Transaksi");
+        koreksiBtn.setDisable(true);
+        moveTable.getSelectionModel().selectedItemProperty().addListener((o, a, v) -> {
+            if (v == null) {
+                koreksiBtn.setDisable(true);
+                return;
+            }
+            boolean allowed = "RUSAK".equalsIgnoreCase(v.kategori())
+                    || "HILANG".equalsIgnoreCase(v.kategori())
+                    || "PEMAKAIAN_INTERNAL".equalsIgnoreCase(v.kategori());
+            koreksiBtn.setDisable(!allowed);
+            if (!allowed) {
+                msg.setText("Mutasi kategori " + v.kategori() + " tidak bisa dikoreksi di form Inventori");
+            }
+        });
+        koreksiBtn.setOnAction(e -> {
+            try {
+                if (koreksiMovementId.getText().isBlank()) {
+                    msg.setText("Pilih mutasi di tabel riwayat untuk dikoreksi");
+                    return;
+                }
+                if (koreksiReason.getText().isBlank()) {
+                    msg.setText("Alasan koreksi wajib diisi");
+                    return;
+                }
+                Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Buat transaksi koreksi untuk mutasi ID " + koreksiMovementId.getText() + "?", ButtonType.YES, ButtonType.NO);
+                confirm.setHeaderText("Konfirmasi Koreksi");
+                confirm.showAndWait().ifPresent(bt -> {
+                    if (bt == ButtonType.YES) {
+                        String res = service.koreksiStockMovement(parseLong(koreksiMovementId.getText(), "Movement ID"), koreksiReason.getText().trim(), user.id());
+                        msg.setText(res);
+                        loadBarang.run();
+                        loadMoves.run();
+                        if (res.startsWith("Koreksi berhasil")) {
+                            koreksiMovementId.clear();
+                            koreksiReason.clear();
+                            moveTable.getSelectionModel().clearSelection();
+                        }
+                    }
+                });
+            } catch (Exception ex) {
+                msg.setText("Koreksi gagal: " + ex.getMessage());
+            }
+        });
+
+        HBox pagerBox = new HBox(pager);
+        pagerBox.setStyle("-fx-alignment: center-right;");
+        VBox listPanel = new VBox(8, new HBox(8, search, refresh), table, pagerBox);
+        listPanel.setPadding(new Insets(10));
+        listPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        GridPane formGrid = new GridPane();
+        formGrid.setHgap(8); formGrid.setVgap(8);
+        formGrid.addRow(0, new Label("Qty keluar"), qty);
+        formGrid.addRow(1, new Label("Kategori"), kategori);
+        formGrid.addRow(2, new Label("Catatan"), note);
+        VBox formPanel = new VBox(8, selectedCard, formGrid, new HBox(8, baru, batal, proses), msg);
+        formPanel.setPadding(new Insets(10));
+        formPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        HBox topRow = new HBox(10, listPanel, formPanel);
+        HBox.setHgrow(listPanel, Priority.ALWAYS);
+        HBox.setHgrow(formPanel, Priority.ALWAYS);
+        listPanel.setPrefWidth(560);
+        formPanel.setPrefWidth(460);
+
+        HBox movePagerBox = new HBox(movePager);
+        movePagerBox.setStyle("-fx-alignment: center-right;");
+        VBox movePanel = new VBox(
+                8,
+                new Label("Riwayat Mutasi Stok"),
+                new HBox(8, new Label("Dari"), from, new Label("Sampai"), to, showAllMoves, applyFilter),
+                moveTable,
+                movePagerBox,
+                new Separator(),
+                new Label("Koreksi Transaksi"),
+                new HBox(8, new Label("Mutasi ID"), koreksiMovementId, new Label("Alasan"), koreksiReason, koreksiBtn)
+        );
+        movePanel.setPadding(new Insets(10));
+        movePanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox box = new VBox(10, new Label("Inventori"), topRow, movePanel);
         box.setPadding(new Insets(10));
+        box.setFocusTraversable(true);
+        box.setOnKeyPressed(e -> {
+            if (e.isControlDown() && e.getCode() == KeyCode.F) search.requestFocus();
+            else if (e.isControlDown() && e.getCode() == KeyCode.N) baru.fire();
+            else if (e.isControlDown() && e.getCode() == KeyCode.S) proses.fire();
+            else if (e.getCode() == KeyCode.F5) refresh.fire();
+            else if (e.getCode() == KeyCode.ESCAPE) batal.fire();
+        });
+
+        loadBarang.run();
+        loadMoves.run();
         return box;
     }
 
@@ -492,17 +1168,19 @@ public class MainApp extends Application {
     }
 
     private VBox masterBarangForm() {
+        final int pageSize = 10;
         Label msg = new Label();
         TextField search = new TextField();
         search.setPromptText("Cari kode/barcode/nama barang");
 
         ObservableList<BarangMasterRow> rows = FXCollections.observableArrayList();
+        ObservableList<BarangMasterRow> allRows = FXCollections.observableArrayList();
         TableView<BarangMasterRow> table = new TableView<>(rows);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-        table.setPrefHeight(300);
+        table.setFixedCellSize(28);
+        table.setPrefHeight((pageSize * 28) + 130);
+        Pagination pagination = new Pagination(1, 0);
 
-        TableColumn<BarangMasterRow, Long> cId = new TableColumn<>("ID");
-        cId.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().id()));
         TableColumn<BarangMasterRow, String> cKode = new TableColumn<>("Kode");
         cKode.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kode()));
         TableColumn<BarangMasterRow, String> cBarcode = new TableColumn<>("Barcode");
@@ -519,7 +1197,7 @@ public class MainApp extends Application {
         cStok.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().stok()));
         TableColumn<BarangMasterRow, BigDecimal> cStokMin = new TableColumn<>("Stok Min");
         cStokMin.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().stokMin()));
-        table.getColumns().addAll(cId, cKode, cBarcode, cNama, cSatuan, cHarga, cPpn, cStok, cStokMin);
+        table.getColumns().addAll(cKode, cBarcode, cNama, cSatuan, cHarga, cPpn, cStok, cStokMin);
 
         TextField id = new TextField();
         id.setDisable(true);
@@ -544,10 +1222,27 @@ public class MainApp extends Application {
             kode.requestFocus();
         };
 
-        Runnable loadRows = () -> {
-            rows.setAll(service.listBarangMaster(search.getText()).stream().map(this::parseBarangMasterRow).toList());
+        Runnable renderCurrentPage = () -> {
+            int pageIndex = pagination.getCurrentPageIndex();
+            int from = pageIndex * pageSize;
+            int to = Math.min(from + pageSize, allRows.size());
+            if (from >= to) {
+                rows.clear();
+            } else {
+                rows.setAll(allRows.subList(from, to));
+            }
             table.refresh();
         };
+
+        Runnable loadRows = () -> {
+            allRows.setAll(service.listBarangMaster(search.getText()).stream().map(this::parseBarangMasterRow).toList());
+            int pageCount = Math.max(1, (int) Math.ceil(allRows.size() / (double) pageSize));
+            pagination.setPageCount(pageCount);
+            pagination.setCurrentPageIndex(0);
+            renderCurrentPage.run();
+        };
+
+        pagination.currentPageIndexProperty().addListener((obs, oldV, newV) -> renderCurrentPage.run());
 
         table.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
             if (v == null) return;
@@ -616,22 +1311,36 @@ public class MainApp extends Application {
 
         GridPane g = new GridPane();
         g.setHgap(8); g.setVgap(8);
-        g.addRow(0, new Label("ID"), id);
-        g.addRow(1, new Label("Kode"), kode);
-        g.addRow(2, new Label("Barcode"), barcode);
-        g.addRow(3, new Label("Nama"), nama);
-        g.addRow(4, new Label("Satuan"), satuan);
-        g.addRow(5, new Label("Harga Jual"), harga);
-        g.addRow(6, new Label("PPN %"), ppn);
-        g.addRow(7, new Label("Stok Minimum"), stokMin);
+        g.addRow(0, new Label("Kode"), kode);
+        g.addRow(1, new Label("Barcode"), barcode);
+        g.addRow(2, new Label("Nama"), nama);
+        g.addRow(3, new Label("Satuan"), satuan);
+        g.addRow(4, new Label("Harga Jual"), harga);
+        g.addRow(5, new Label("PPN %"), ppn);
+        g.addRow(6, new Label("Stok Minimum"), stokMin);
 
-        VBox box = new VBox(10,
-                new Label("Master Barang"),
+        HBox listPagerWrap = new HBox(pagination);
+        listPagerWrap.setStyle("-fx-alignment: center-right;");
+        VBox listPanel = new VBox(8,
                 new HBox(8, search, refresh),
                 table,
+                listPagerWrap
+        );
+        listPanel.setPadding(new Insets(10));
+        listPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox inputPanel = new VBox(8,
                 g,
                 new HBox(8, baru, simpan, update, hapus),
                 msg
+        );
+        inputPanel.setPadding(new Insets(10));
+        inputPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox box = new VBox(10,
+                new Label("Master Barang"),
+                listPanel,
+                inputPanel
         );
         box.setPadding(new Insets(10));
         box.setOnKeyPressed(e -> {
@@ -649,58 +1358,473 @@ public class MainApp extends Application {
     }
 
     private VBox masterSantriForm() {
+        final int pageSize = 10;
         Label msg = new Label();
+        TextField search = new TextField();
+        search.setPromptText("Cari NIS/nama/kelas santri");
+
+        ObservableList<SantriMasterRow> rows = FXCollections.observableArrayList();
+        ObservableList<SantriMasterRow> allRows = FXCollections.observableArrayList();
+        TableView<SantriMasterRow> table = new TableView<>(rows);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        table.setFixedCellSize(28);
+        table.setPrefHeight((pageSize * 28) + 130);
+        Pagination pagination = new Pagination(1, 0);
+
+        TableColumn<SantriMasterRow, String> cNis = new TableColumn<>("NIS");
+        cNis.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nis()));
+        TableColumn<SantriMasterRow, String> cNama = new TableColumn<>("Nama");
+        cNama.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nama()));
+        TableColumn<SantriMasterRow, String> cKelas = new TableColumn<>("Kelas");
+        cKelas.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kelas()));
+        TableColumn<SantriMasterRow, Boolean> cAktif = new TableColumn<>("Aktif");
+        cAktif.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().aktif()));
+        TableColumn<SantriMasterRow, BigDecimal> cSaldo = new TableColumn<>("Saldo");
+        cSaldo.setCellValueFactory(v -> new SimpleObjectProperty<>(v.getValue().saldo()));
+        table.getColumns().addAll(cNis, cNama, cKelas, cAktif, cSaldo);
+
+        TextField id = new TextField();
+        id.setVisible(false);
+        id.setManaged(false);
         TextField nis = new TextField();
         TextField nama = new TextField();
         TextField kelas = new TextField();
         CheckBox aktif = new CheckBox("Aktif");
         aktif.setSelected(true);
-        Button save = new Button("Tambah Santri");
-        save.setOnAction(e -> msg.setText(service.createSantri(nis.getText().trim(), nama.getText().trim(), kelas.getText().trim(), aktif.isSelected())));
+
+        Runnable clearForm = () -> {
+            id.clear();
+            nis.clear();
+            nama.clear();
+            kelas.clear();
+            aktif.setSelected(true);
+            msg.setText("");
+            nis.requestFocus();
+        };
+
+        Runnable renderCurrentPage = () -> {
+            int pageIndex = pagination.getCurrentPageIndex();
+            int from = pageIndex * pageSize;
+            int to = Math.min(from + pageSize, allRows.size());
+            if (from >= to) rows.clear();
+            else rows.setAll(allRows.subList(from, to));
+            table.refresh();
+        };
+
+        Runnable loadRows = () -> {
+            allRows.setAll(service.listSantriMaster(search.getText()).stream().map(this::parseSantriMasterRow).toList());
+            int pageCount = Math.max(1, (int) Math.ceil(allRows.size() / (double) pageSize));
+            pagination.setPageCount(pageCount);
+            pagination.setCurrentPageIndex(0);
+            renderCurrentPage.run();
+        };
+
+        pagination.currentPageIndexProperty().addListener((obs, oldV, newV) -> renderCurrentPage.run());
+        search.textProperty().addListener((obs, oldV, v) -> loadRows.run());
+        table.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
+            if (v == null) return;
+            id.setText(String.valueOf(v.id()));
+            nis.setText(v.nis());
+            nama.setText(v.nama());
+            kelas.setText(v.kelas());
+            aktif.setSelected(v.aktif());
+        });
+
+        Button baru = new Button("Baru (Ctrl+N)");
+        baru.setOnAction(e -> clearForm.run());
+        Button simpan = new Button("Simpan (Ctrl+S)");
+        simpan.setOnAction(e -> {
+            try {
+                validateSantriForm(nis, nama, kelas);
+                String res = service.createSantri(nis.getText().trim(), nama.getText().trim(), kelas.getText().trim(), aktif.isSelected());
+                msg.setText(res);
+                loadRows.run();
+                if (res.startsWith("Santri berhasil")) clearForm.run();
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button update = new Button("Update");
+        update.setOnAction(e -> {
+            try {
+                if (id.getText().isBlank()) {
+                    msg.setText("Pilih santri dari tabel untuk update");
+                    return;
+                }
+                validateSantriForm(nis, nama, kelas);
+                String res = service.updateSantri(parseLong(id.getText(), "ID"), nis.getText().trim(), nama.getText().trim(), kelas.getText().trim(), aktif.isSelected());
+                msg.setText(res);
+                loadRows.run();
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button hapus = new Button("Hapus (Del)");
+        hapus.setOnAction(e -> {
+            if (id.getText().isBlank()) {
+                msg.setText("Pilih santri dari tabel untuk hapus");
+                return;
+            }
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Hapus santri ID " + id.getText() + "?", ButtonType.YES, ButtonType.NO);
+            confirm.setHeaderText("Konfirmasi Hapus");
+            confirm.showAndWait().ifPresent(bt -> {
+                if (bt == ButtonType.YES) {
+                    String res = service.deleteSantri(parseLong(id.getText(), "ID"));
+                    msg.setText(res);
+                    loadRows.run();
+                    if (res.startsWith("Santri berhasil")) clearForm.run();
+                }
+            });
+        });
+        Button refresh = new Button("Refresh");
+        refresh.setOnAction(e -> loadRows.run());
+
         GridPane g = new GridPane();
         g.setHgap(8); g.setVgap(8);
         g.addRow(0, new Label("NIS"), nis);
         g.addRow(1, new Label("Nama"), nama);
         g.addRow(2, new Label("Kelas"), kelas);
         g.addRow(3, new Label("Status"), aktif);
-        VBox box = new VBox(10, new Label("Master Santri"), g, save, msg);
+
+        HBox listPagerWrap = new HBox(pagination);
+        listPagerWrap.setStyle("-fx-alignment: center-right;");
+        VBox listPanel = new VBox(8,
+                new HBox(8, search, refresh),
+                table,
+                listPagerWrap
+        );
+        listPanel.setPadding(new Insets(10));
+        listPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox inputPanel = new VBox(8,
+                g,
+                new HBox(8, baru, simpan, update, hapus),
+                msg
+        );
+        inputPanel.setPadding(new Insets(10));
+        inputPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox box = new VBox(10, new Label("Master Santri"), listPanel, inputPanel);
         box.setPadding(new Insets(10));
+        box.setOnKeyPressed(e -> {
+            if (e.isControlDown() && e.getCode() == KeyCode.N) {
+                baru.fire();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.S) {
+                if (id.getText().isBlank()) simpan.fire(); else update.fire();
+            } else if (e.getCode() == KeyCode.DELETE) {
+                hapus.fire();
+            }
+        });
+        box.setFocusTraversable(true);
+        loadRows.run();
         return box;
     }
 
     private VBox masterSupplierForm() {
+        final int pageSize = 10;
         Label msg = new Label();
+        TextField search = new TextField();
+        search.setPromptText("Cari nama/kontak/alamat supplier");
+
+        ObservableList<SupplierMasterRow> rows = FXCollections.observableArrayList();
+        ObservableList<SupplierMasterRow> allRows = FXCollections.observableArrayList();
+        TableView<SupplierMasterRow> table = new TableView<>(rows);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        table.setFixedCellSize(28);
+        table.setPrefHeight((pageSize * 28) + 130);
+        Pagination pagination = new Pagination(1, 0);
+
+        TableColumn<SupplierMasterRow, String> cNama = new TableColumn<>("Nama");
+        cNama.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().nama()));
+        TableColumn<SupplierMasterRow, String> cKontak = new TableColumn<>("Kontak");
+        cKontak.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().kontak()));
+        TableColumn<SupplierMasterRow, String> cAlamat = new TableColumn<>("Alamat");
+        cAlamat.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().alamat()));
+        table.getColumns().addAll(cNama, cKontak, cAlamat);
+
+        TextField id = new TextField();
+        id.setVisible(false);
+        id.setManaged(false);
         TextField nama = new TextField();
         TextField kontak = new TextField();
         TextField alamat = new TextField();
-        Button save = new Button("Tambah Supplier");
-        save.setOnAction(e -> msg.setText(service.createSupplier(nama.getText().trim(), kontak.getText().trim(), alamat.getText().trim())));
+
+        Runnable clearForm = () -> {
+            id.clear();
+            nama.clear();
+            kontak.clear();
+            alamat.clear();
+            msg.setText("");
+            nama.requestFocus();
+        };
+
+        Runnable renderCurrentPage = () -> {
+            int pageIndex = pagination.getCurrentPageIndex();
+            int from = pageIndex * pageSize;
+            int to = Math.min(from + pageSize, allRows.size());
+            if (from >= to) rows.clear();
+            else rows.setAll(allRows.subList(from, to));
+            table.refresh();
+        };
+
+        Runnable loadRows = () -> {
+            allRows.setAll(service.listSupplierMaster(search.getText()).stream().map(this::parseSupplierMasterRow).toList());
+            int pageCount = Math.max(1, (int) Math.ceil(allRows.size() / (double) pageSize));
+            pagination.setPageCount(pageCount);
+            pagination.setCurrentPageIndex(0);
+            renderCurrentPage.run();
+        };
+
+        pagination.currentPageIndexProperty().addListener((obs, oldV, newV) -> renderCurrentPage.run());
+        search.textProperty().addListener((obs, oldV, v) -> loadRows.run());
+        table.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
+            if (v == null) return;
+            id.setText(String.valueOf(v.id()));
+            nama.setText(v.nama());
+            kontak.setText(v.kontak());
+            alamat.setText(v.alamat());
+        });
+
+        Button baru = new Button("Baru (Ctrl+N)");
+        baru.setOnAction(e -> clearForm.run());
+        Button simpan = new Button("Simpan (Ctrl+S)");
+        simpan.setOnAction(e -> {
+            try {
+                validateSupplierForm(nama);
+                String res = service.createSupplier(nama.getText().trim(), kontak.getText().trim(), alamat.getText().trim());
+                msg.setText(res);
+                loadRows.run();
+                if (res.startsWith("Supplier berhasil")) clearForm.run();
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button update = new Button("Update");
+        update.setOnAction(e -> {
+            try {
+                if (id.getText().isBlank()) {
+                    msg.setText("Pilih supplier dari tabel untuk update");
+                    return;
+                }
+                validateSupplierForm(nama);
+                String res = service.updateSupplier(parseLong(id.getText(), "ID"), nama.getText().trim(), kontak.getText().trim(), alamat.getText().trim());
+                msg.setText(res);
+                loadRows.run();
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button hapus = new Button("Hapus (Del)");
+        hapus.setOnAction(e -> {
+            if (id.getText().isBlank()) {
+                msg.setText("Pilih supplier dari tabel untuk hapus");
+                return;
+            }
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Hapus supplier ID " + id.getText() + "?", ButtonType.YES, ButtonType.NO);
+            confirm.setHeaderText("Konfirmasi Hapus");
+            confirm.showAndWait().ifPresent(bt -> {
+                if (bt == ButtonType.YES) {
+                    String res = service.deleteSupplier(parseLong(id.getText(), "ID"));
+                    msg.setText(res);
+                    loadRows.run();
+                    if (res.startsWith("Supplier berhasil")) clearForm.run();
+                }
+            });
+        });
+        Button refresh = new Button("Refresh");
+        refresh.setOnAction(e -> loadRows.run());
+
         GridPane g = new GridPane();
         g.setHgap(8); g.setVgap(8);
         g.addRow(0, new Label("Nama"), nama);
         g.addRow(1, new Label("Kontak"), kontak);
         g.addRow(2, new Label("Alamat"), alamat);
-        VBox box = new VBox(10, new Label("Master Supplier"), g, save, msg);
+
+        HBox listPagerWrap = new HBox(pagination);
+        listPagerWrap.setStyle("-fx-alignment: center-right;");
+        VBox listPanel = new VBox(8,
+                new HBox(8, search, refresh),
+                table,
+                listPagerWrap
+        );
+        listPanel.setPadding(new Insets(10));
+        listPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox inputPanel = new VBox(8,
+                g,
+                new HBox(8, baru, simpan, update, hapus),
+                msg
+        );
+        inputPanel.setPadding(new Insets(10));
+        inputPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox box = new VBox(10, new Label("Master Supplier"), listPanel, inputPanel);
         box.setPadding(new Insets(10));
+        box.setOnKeyPressed(e -> {
+            if (e.isControlDown() && e.getCode() == KeyCode.N) {
+                baru.fire();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.S) {
+                if (id.getText().isBlank()) simpan.fire(); else update.fire();
+            } else if (e.getCode() == KeyCode.DELETE) {
+                hapus.fire();
+            }
+        });
+        box.setFocusTraversable(true);
+        loadRows.run();
         return box;
     }
 
     private VBox masterUserForm() {
+        final int pageSize = 10;
         Label msg = new Label();
+        TextField search = new TextField();
+        search.setPromptText("Cari username/role");
+
+        ObservableList<UserMasterRow> rows = FXCollections.observableArrayList();
+        ObservableList<UserMasterRow> allRows = FXCollections.observableArrayList();
+        TableView<UserMasterRow> table = new TableView<>(rows);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+        table.setFixedCellSize(28);
+        table.setPrefHeight((pageSize * 28) + 130);
+        Pagination pagination = new Pagination(1, 0);
+
+        TableColumn<UserMasterRow, String> cUsername = new TableColumn<>("Username");
+        cUsername.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().username()));
+        TableColumn<UserMasterRow, String> cRole = new TableColumn<>("Role");
+        cRole.setCellValueFactory(v -> new SimpleStringProperty(v.getValue().role()));
+        table.getColumns().addAll(cUsername, cRole);
+
+        TextField id = new TextField();
+        id.setVisible(false);
+        id.setManaged(false);
         TextField username = new TextField();
         PasswordField password = new PasswordField();
         ComboBox<Role> role = new ComboBox<>();
         role.getItems().addAll(Role.ADMIN, Role.KASIR, Role.MANAGER);
         role.getSelectionModel().select(Role.KASIR);
-        Button save = new Button("Tambah User");
-        save.setOnAction(e -> msg.setText(service.createUser(username.getText().trim(), password.getText(), role.getValue())));
+
+        Runnable clearForm = () -> {
+            id.clear();
+            username.clear();
+            password.clear();
+            role.getSelectionModel().select(Role.KASIR);
+            msg.setText("");
+            username.requestFocus();
+        };
+
+        Runnable renderCurrentPage = () -> {
+            int pageIndex = pagination.getCurrentPageIndex();
+            int from = pageIndex * pageSize;
+            int to = Math.min(from + pageSize, allRows.size());
+            if (from >= to) rows.clear();
+            else rows.setAll(allRows.subList(from, to));
+            table.refresh();
+        };
+
+        Runnable loadRows = () -> {
+            allRows.setAll(service.listUserMaster(search.getText()).stream().map(this::parseUserMasterRow).toList());
+            int pageCount = Math.max(1, (int) Math.ceil(allRows.size() / (double) pageSize));
+            pagination.setPageCount(pageCount);
+            pagination.setCurrentPageIndex(0);
+            renderCurrentPage.run();
+        };
+
+        pagination.currentPageIndexProperty().addListener((obs, oldV, newV) -> renderCurrentPage.run());
+        search.textProperty().addListener((obs, oldV, v) -> loadRows.run());
+        table.getSelectionModel().selectedItemProperty().addListener((obs, oldV, v) -> {
+            if (v == null) return;
+            id.setText(String.valueOf(v.id()));
+            username.setText(v.username());
+            password.clear();
+            role.setValue(Role.valueOf(v.role()));
+        });
+
+        Button baru = new Button("Baru (Ctrl+N)");
+        baru.setOnAction(e -> clearForm.run());
+        Button simpan = new Button("Simpan (Ctrl+S)");
+        simpan.setOnAction(e -> {
+            try {
+                validateUserForm(username, password, true);
+                String res = service.createUser(username.getText().trim(), password.getText(), role.getValue());
+                msg.setText(res);
+                loadRows.run();
+                if (res.startsWith("User berhasil")) clearForm.run();
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button update = new Button("Update");
+        update.setOnAction(e -> {
+            try {
+                if (id.getText().isBlank()) {
+                    msg.setText("Pilih user dari tabel untuk update");
+                    return;
+                }
+                validateUserForm(username, password, false);
+                String res = service.updateUser(parseLong(id.getText(), "ID"), username.getText().trim(), password.getText(), role.getValue());
+                msg.setText(res);
+                loadRows.run();
+            } catch (Exception ex) {
+                msg.setText("Validasi gagal: " + ex.getMessage());
+            }
+        });
+        Button hapus = new Button("Hapus (Del)");
+        hapus.setOnAction(e -> {
+            if (id.getText().isBlank()) {
+                msg.setText("Pilih user dari tabel untuk hapus");
+                return;
+            }
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, "Hapus user ID " + id.getText() + "?", ButtonType.YES, ButtonType.NO);
+            confirm.setHeaderText("Konfirmasi Hapus");
+            confirm.showAndWait().ifPresent(bt -> {
+                if (bt == ButtonType.YES) {
+                    String res = service.deleteUser(parseLong(id.getText(), "ID"));
+                    msg.setText(res);
+                    loadRows.run();
+                    if (res.startsWith("User berhasil")) clearForm.run();
+                }
+            });
+        });
+        Button refresh = new Button("Refresh");
+        refresh.setOnAction(e -> loadRows.run());
+
         GridPane g = new GridPane();
         g.setHgap(8); g.setVgap(8);
         g.addRow(0, new Label("Username"), username);
-        g.addRow(1, new Label("Password"), password);
+        g.addRow(1, new Label("Password (kosongkan saat update jika tidak ganti)"), password);
         g.addRow(2, new Label("Role"), role);
-        VBox box = new VBox(10, new Label("Master User"), g, save, msg);
+
+        HBox listPagerWrap = new HBox(pagination);
+        listPagerWrap.setStyle("-fx-alignment: center-right;");
+        VBox listPanel = new VBox(8,
+                new HBox(8, search, refresh),
+                table,
+                listPagerWrap
+        );
+        listPanel.setPadding(new Insets(10));
+        listPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox inputPanel = new VBox(8,
+                g,
+                new HBox(8, baru, simpan, update, hapus),
+                msg
+        );
+        inputPanel.setPadding(new Insets(10));
+        inputPanel.setStyle("-fx-background-color: #f8fafc; -fx-border-color: #d5dbe3; -fx-border-radius: 8; -fx-background-radius: 8;");
+
+        VBox box = new VBox(10, new Label("Master User"), listPanel, inputPanel);
         box.setPadding(new Insets(10));
+        box.setOnKeyPressed(e -> {
+            if (e.isControlDown() && e.getCode() == KeyCode.N) {
+                baru.fire();
+            } else if (e.isControlDown() && e.getCode() == KeyCode.S) {
+                if (id.getText().isBlank()) simpan.fire(); else update.fire();
+            } else if (e.getCode() == KeyCode.DELETE) {
+                hapus.fire();
+            }
+        });
+        box.setFocusTraversable(true);
+        loadRows.run();
         return box;
     }
 
@@ -849,6 +1973,113 @@ public class MainApp extends Application {
         }
     }
 
+    private SantriMasterRow parseSantriMasterRow(String line) {
+        String[] p = line.split("\\|");
+        if (p.length < 6) throw new IllegalArgumentException("Format santri master tidak valid");
+        return new SantriMasterRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                p[2].trim(),
+                p[3].trim(),
+                Boolean.parseBoolean(p[4].trim()),
+                safeMoney(p[5].trim())
+        );
+    }
+
+    private void validateSantriForm(TextField nis, TextField nama, TextField kelas) {
+        if (nis.getText().isBlank()) throw new IllegalArgumentException("NIS wajib diisi");
+        if (nama.getText().isBlank()) throw new IllegalArgumentException("Nama wajib diisi");
+        if (kelas.getText().isBlank()) throw new IllegalArgumentException("Kelas wajib diisi");
+    }
+
+    private SupplierMasterRow parseSupplierMasterRow(String line) {
+        String[] p = line.split("\\|");
+        if (p.length < 4) throw new IllegalArgumentException("Format supplier master tidak valid");
+        return new SupplierMasterRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                p[2].trim(),
+                p[3].trim()
+        );
+    }
+
+    private void validateSupplierForm(TextField nama) {
+        if (nama.getText().isBlank()) throw new IllegalArgumentException("Nama supplier wajib diisi");
+    }
+
+    private UserMasterRow parseUserMasterRow(String line) {
+        String[] p = line.split("\\|");
+        if (p.length < 3) throw new IllegalArgumentException("Format user master tidak valid");
+        return new UserMasterRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                p[2].trim()
+        );
+    }
+
+    private void validateUserForm(TextField username, PasswordField password, boolean requirePassword) {
+        if (username.getText().isBlank()) throw new IllegalArgumentException("Username wajib diisi");
+        if (requirePassword && password.getText().isBlank()) {
+            throw new IllegalArgumentException("Password wajib diisi");
+        }
+    }
+
+    private WalletRow parseWalletRow(String line) {
+        String[] p = line.split("\\|", -1);
+        if (p.length < 8) throw new IllegalArgumentException("Format wallet row tidak valid");
+        return new WalletRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                p[2].trim(),
+                safeMoney(p[3].trim()),
+                safeMoney(p[4].trim()),
+                p[5].trim(),
+                p[6].trim(),
+                p[7].trim()
+        );
+    }
+
+    private TopupReversalRow parseTopupReversalRow(String line) {
+        String[] p = line.split("\\|", -1);
+        if (p.length < 5) throw new IllegalArgumentException("Format topup reversal row tidak valid");
+        return new TopupReversalRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                safeMoney(p[2].trim()),
+                safeMoney(p[3].trim()),
+                p[4].trim()
+        );
+    }
+
+    private InventoryBarangRow parseInventoryBarangRow(String line) {
+        String[] p = line.split("\\|", -1);
+        if (p.length < 6) throw new IllegalArgumentException("Format inventory barang tidak valid");
+        return new InventoryBarangRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                p[2].trim(),
+                p[3].trim(),
+                safeMoney(p[4].trim()),
+                safeMoney(p[5].trim())
+        );
+    }
+
+    private StockMoveRow parseStockMoveRow(String line) {
+        String[] p = line.split("\\|", -1);
+        if (p.length < 9) throw new IllegalArgumentException("Format stock movement tidak valid");
+        return new StockMoveRow(
+                Long.parseLong(p[0].trim()),
+                p[1].trim(),
+                p[2].trim(),
+                p[3].trim(),
+                p[4].trim(),
+                p[5].trim(),
+                safeMoney(p[6].trim()),
+                p[7].trim(),
+                p[8].trim()
+        );
+    }
+
     private record BarangRow(long id, String kode, String barcode, String nama, BigDecimal stok, BigDecimal harga, BigDecimal ppn) {
         String display() {
             return id + " | " + kode + " | " + nama + " | stok=" + stok + " | harga=" + harga;
@@ -880,6 +2111,35 @@ public class MainApp extends Application {
     private record BarangMasterRow(
             long id, String kode, String barcode, String nama, String satuan,
             BigDecimal harga, BigDecimal ppn, BigDecimal stok, BigDecimal stokMin
+    ) {}
+
+    private record SantriMasterRow(
+            long id, String nis, String nama, String kelas, boolean aktif, BigDecimal saldo
+    ) {}
+
+    private record SupplierMasterRow(
+            long id, String nama, String kontak, String alamat
+    ) {}
+
+    private record UserMasterRow(
+            long id, String username, String role
+    ) {}
+
+    private record WalletRow(
+            long id, String createdAt, String tipe, BigDecimal nominal, BigDecimal saldoSetelah,
+            String refNo, String reason, String authorizedBy
+    ) {}
+
+    private record TopupReversalRow(
+            long id, String createdAt, BigDecimal nominal, BigDecimal saldoSetelah, String status
+    ) {}
+
+    private record InventoryBarangRow(
+            long id, String kode, String nama, String satuan, BigDecimal stok, BigDecimal stokMin
+    ) {}
+
+    private record StockMoveRow(
+            long id, String createdAt, String kode, String nama, String tipe, String kategori, BigDecimal qty, String note, String username
     ) {}
 
     public static void main(String[] args) {

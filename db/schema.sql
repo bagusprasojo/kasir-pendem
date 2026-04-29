@@ -106,6 +106,8 @@ CREATE TABLE IF NOT EXISTS wallet_transaction (
   FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
+CREATE UNIQUE INDEX ux_wallet_tipe_ref_no ON wallet_transaction (tipe, ref_no);
+
 CREATE TABLE IF NOT EXISTS stock_movement (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   barang_id BIGINT NOT NULL,
